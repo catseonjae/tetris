@@ -1,0 +1,11 @@
+alt shift (up/down) : expand row above/below
+alt shift enter : add row above
+ctrl enter : add row below
+
+ctrl D : select same txt one by one
+ctrl shift l : select every same txt
+
+ctrl (home/end) : move to start/end of page
+ctrl (up/down) : scroll up/down
+
+ctrl shift k : delete row

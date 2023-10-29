@@ -1,0 +1,12 @@
+{
+    "down hold, a, linear, 2, 0":"try_move_block_to_left",
+    "down hold, s, linear, 2, 0":"try_pull_down_block",
+    "down hold, d, linear, 2, 0":"try_move_block_to_right",
+    "down, j":"rotate_block_counterclockwise",
+    "down, k":"rotate_block_180",
+    "down, l":"rotate_block_clockwise",
+    "down, space":"drop_block",
+    "down, left ctrl":"cheat",
+    "down, caps lock":"hold_curr_block",
+    "down, escape":"exit_game"
+}
