@@ -5,6 +5,7 @@ import random
 import time
 import numpy
 import json
+from queue import PriorityQueue
 
 INF = 9999999999
 
@@ -34,7 +35,7 @@ class Block:
             self.rgb = block_rgbs[name]
 
         #set geometry
-        self.pos=[0,4-self.size//2]
+        self.pos=[0,5-self.size//2]
         self.rotation_cnt = 0
 
         #movement constants
@@ -45,6 +46,8 @@ class Block:
 
         self.dy=[0,-1,0,1]
         self.dx=[1,0,-1,0]
+    def get_default(self):
+        return Block(self.name)
 
     def get_shadow(self):
         block=copy.deepcopy(self)
@@ -163,30 +166,45 @@ class Resource:
         self.key_list = reader.read_strings_from_txt('event system/key list.txt')
 
 class Graphic_Manager:
-    def __init__(self, block_size=32):
+    def __init__(self, owner_instance, square_size=20, block_size=24,preview_block_size=28):
+        self.owner_instance=owner_instance
         self.resource = Resource()
         self.screen = pygame.display.set_mode((0, 0), pygame.FULLSCREEN)
         self.SCREEN_WIDTH, self.SCREEN_HEIGHT = self.screen.get_size()
 
+        self.square_size=square_size
         self.block_size=block_size
-
+        self.preview_block_size = preview_block_size
+        
+        #
         vertical_center = self.SCREEN_HEIGHT/2
         horizontal_center = self.SCREEN_WIDTH/2
-        self.start=[horizontal_center - self.block_size*5, vertical_center - self.block_size*11]
-        self.end=[horizontal_center + self.block_size*5, vertical_center + self.block_size*11] 
+        self.board_start=[vertical_center - self.block_size*11, horizontal_center - self.block_size*5]
+        self.board_end=[vertical_center + self.block_size*11, horizontal_center + self.block_size*5] 
         
-    def draw_board(self):
-        pass ########################### PLEASE EDIT ###########################
+    def draw_board_case(self):
+        brick = Block('W')
+        for i in range(-1,11):
+            self.draw_block_piece_by_index(brick.rgb,-1,i)
+            self.draw_block_piece_by_index(brick.rgb,22,i)
+        for i in range(22):
+            self.draw_block_piece_by_index(brick.rgb,i,-1)
+            self.draw_block_piece_by_index(brick.rgb,i,10)
+
     def draw_block(self, block):
         color = block.rgb
         for i,j in block.get_elements_in_board():
             self.draw_block_piece_by_index(color, i, j)
     def draw_block_piece_by_pos(self, color, pos):
         y,x=pos[0],pos[1]
-        pygame.draw.rect
-        pygame.draw.rect(self.screen, color, [y, x, self.block_size, self.block_size])
+        def convert(x):
+            return x-self.square_size/2+self.block_size/2
+        assert convert(y)!=y
+        y,x=convert(y),convert(x)
+        
+        pygame.draw.rect(self.screen, color, [x, y, self.square_size, self.square_size])
     def draw_block_piece_by_index(self, color, i, j):
-        self.draw_block_piece_by_pos(color,[self.start[0]+self.block_size*j,self.start[1]+self.block_size*i])
+        self.draw_block_piece_by_pos(color,[self.board_start[0]+self.block_size*i,self.board_start[1]+self.block_size*j])
 
     def draw_installed_blocks(self,board):
         for i in range(22):
@@ -194,12 +212,26 @@ class Graphic_Manager:
                 block_name = self.resource.block_names[board[i][j]]
                 self.draw_block_piece_by_index(self.resource.block_rgbs[block_name], i, j)
                 
-
-    def draw_env(self, board):
+    def draw_board(self, board):
         self.screen.fill(BLACK)
-        self.draw_board()
+        self.draw_board_case()
         self.draw_installed_blocks(board)
     
+    def draw_block_queue(self, queue):
+        block_queue = [Block(self.resource.block_names[i]) for i in queue]
+        is_height_1 = False 
+        for i in range(5):
+            is_height_1 = block_queue[i].name=='I'
+            if is_height_1:
+                block_queue[i].pos[0] = 1+3*i+1.5-0.5
+            else:
+                block_queue[i].pos[0] = 1+3*i+1.5-1
+            block_queue[i].pos[1]=13-block_queue[i].size/2
+            self.draw_block(block_queue[i])
+
+    def draw_hold(self, holding_block):
+        holding_block.pos=[1,-holding_block.size/2-3.5]
+        self.draw_block(holding_block)
 
     def draw_game_over(self):
         font = pygame.font.SysFont("notosanscjkkr",30)
@@ -225,7 +257,7 @@ class Tetris:
     def __init__(self):
         #helper
         self.resource = Resource()
-        self.graphic_manager = Graphic_Manager()
+        self.graphic_manager = Graphic_Manager(self)
         self.func_helper = Functions()
 
         #event queue
@@ -254,13 +286,12 @@ class Tetris:
         self.dx=[1,0,-1,0]
 
         #gravity
-        ################################### temp setting #########3
         self.gravity_period = 1
         self.lock_delay_func = self.func_helper.get_func('linear', -1/5, 1)
         self.lock_delay_count = 0
         self.lock_delay = 0
         self.whether_reaches_ground = False
-        self.arrival_maintained = False
+        self.whether_reaches_ground_prev = False
         self.gravity_action_event_key = None
 
         #time
@@ -284,11 +315,25 @@ class Tetris:
             }
 
         #event
-        self.event_map={}
+        self.event_map_default={}
         with open('event system/event map.json', 'r', encoding='utf-8') as file:
-            self.event_map = json.load(file)
+            self.event_map_default = json.load(file)
+        self.event_map = copy.deepcopy(self.event_map_default)
+        self.event_map_on_ground = copy.deepcopy(self.event_map_default)
+
+        self.pull_down_input = None
+        for key in self.event_map_on_ground.keys():
+            if self.event_map_on_ground[key] == 'try_pull_down_block':
+                self.pull_down_input=key
+                break
+        del self.event_map_on_ground[self.pull_down_input]
+
+        self.event_delete_reservation_onehot = {}
+        self.event_addition_reservation_list = []
         self.game_over_flag=False
         self.exit_flag=False
+        self.event_queue_clear_reservation_flag=False
+        self.event_map_change_reservation=None
 
         #function map
         self.func_map = {
@@ -312,7 +357,7 @@ class Tetris:
     def start(self):
         self.add_blocks_to_queue()
         self.grab_block()
-        self.add_event('act_gravity', self.gravity_period)
+        self.add_gravity_event()
     def exit_game(self):
         self.exit_flag = True
     def hold_curr_block(self):
@@ -321,57 +366,82 @@ class Tetris:
         
         #t: swapping route variable
         t=self.holding_block
-        self.holding_block=self.curr_block
+        self.holding_block=self.curr_block.get_default()
         if t is None:
             self.grab_block()
         else:
-            self.curr_block=t
-            self.set_dropped()
+            self.curr_block=t.get_default()
+            self.update_lock()
         self.used_hold = True
 
     def display(self):
-        self.graphic_manager.draw_env(self.board)
+        self.graphic_manager.draw_board(self.board)
+        
         if self.dropped is not None:
             self.graphic_manager.draw_block(self.dropped)
+        
+        if self.holding_block is not None:
+            self.graphic_manager.draw_hold(self.holding_block)
+        self.graphic_manager.draw_block_queue(self.block_queue)
+        
         self.graphic_manager.draw_block(self.curr_block)
+        
+
         if self.game_over_flag:
             self.graphic_manager.draw_game_over()
+        
+        
         pygame.display.update()
     
     def reaches_ground(self):
         return self.overlaps(self.curr_block.get_moved_by_dir(self.DOWN))
-    def delete_event(self, key):
-        assert key in self.event_queue
-        del self.event_queue[key]
-    #act_gravity와 update_lock가 같은 프레임에서 이 순서대로 실행될 경우 에러
-    #drop과 트라이 무브 블록이 동시에 실행
-
+    def reserve_delete_event(self, key):
+        self.event_delete_reservation_onehot[key]=1
 
     def event_process(self):
         t=time.time()
-        keys = self.event_queue.keys()
-        for i in keys:
+        for key in self.event_queue.keys():
             if self.event_queue_clear_reservation_flag:
                 break
-            executation_time = self.event_queue[i][1]
-            cmd=self.event_queue[i][0]
+            if self.event_delete_reservation_onehot[key]:
+                continue
+            executation_time = self.event_queue[key][1]
+            cmd=self.event_queue[key][0]
+
             if executation_time<=t:
                 if type(cmd)==list:
                     for j in cmd:
                         self.execute_cmd(j)
+                        self.reserve_delete_event(i)
                 else:
                     self.execute_cmd(cmd)
-                    self.delete_event(i)
+                    self.reserve_delete_event(key)
         if self.event_queue_clear_reservation_flag:
-            self.event_queue={}
+            self.event_queue = {}
+            self.event_addition_reservation_list = []
+            self.event_delete_reservation_onehot = {}
             self.event_queue_clear_reservation_flag=False
-            return
+        
+        for key, value in self.event_addition_reservation_list:
+            self.event_queue[key] = value
+            if not key in self.event_delete_reservation_onehot:
+                self.event_delete_reservation_onehot[key]=0
+
+        delete_event_list = []
+        for key in self.event_delete_reservation_onehot.keys():
+            if self.event_delete_reservation_onehot[key]:
+                del self.event_queue[key]
+                delete_event_list.append(key)
+
+        for key in delete_event_list:
+            del self.event_delete_reservation_onehot[key]
+
+        self.event_addition_reservation_list=[]
+
     def loop(self):
         self.display()
-        self.event_process()
         self.deal_input()
-
-
+        self.event_process()
 
     def cheat(self):
         for i in range(22):
@@ -379,11 +449,6 @@ class Tetris:
                 self.board[i][j]=0
 
     #movement
-    def update_lock(self):
-        self.update_arrival_info()
-        if self.arrival_maintained:
-            self.update_lock_delay()
-        self.set_dropped()
 
     def can_move_block(self, dir):       
         cand = self.curr_block.get_moved_by_dir(dir)
@@ -392,52 +457,75 @@ class Tetris:
         if self.can_move_block(dir):
             self.curr_block.move_by_dir(dir)
             self.update_lock()
+            return True
+        return False
             #play
     def try_move_block_to_left(self):
         self.try_move_block(self.LEFT)
     def try_move_block_to_right(self):
         self.try_move_block(self.RIGHT)
     def try_pull_down_block(self):
-        self.try_move_block(self.DOWN)
+        assert not self.overlaps(self.curr_block)
+        if self.try_move_block(self.DOWN):
+            self.reserve_delete_event(self.gravity_action_event_key)
+            self.add_gravity_event()
+            
     #gravity
-
+    def reset_gravity(self):
+        self.reserve_delete_event(self.gravity_action_event_key)
+        self.add_gravity_event()
+    def add_gravity_event(self):
+        self.reserve_add_event('act_gravity', self.gravity_period)
+        self.gravity_action_event_key = self.event_queue_counter
+        print(self.gravity_action_event_key)
+    
     def act_gravity(self):
         if self.whether_reaches_ground:
             self.install_block()
             self.grab_block()
-            self.add_event('act_gravity', self.gravity_period)
-            self.gravity_action_event_key = self.event_queue_counter
-            self.update_arrival_info()
+            if self.game_over_flag:
+                return
+            self.update_lock()
+            self.add_gravity_event()
             return
-        assert not self.reaches_ground()
         self.curr_block.move_by_dir(self.DOWN)
-        self.add_event('act_gravity', self.gravity_period)
-        self.gravity_action_event_key = self.event_queue_counter
         self.update_lock()
-    def update_lock_delay(self):
-        delay = self.lock_delay_func(self.lock_delay_count)
-        if delay>0:
-            self.delete_event(self.gravity_action_event_key)
-            self.add_event('act_gravity',delay)
+        self.add_gravity_event()
+
+    def update_lock(self):
+        self.update_arrival_info()
+
+        if self.whether_reaches_ground and self.whether_reaches_ground_prev:
+            self.update_lock_delay()
+        elif self.whether_reaches_ground and not self.whether_reaches_ground_prev:
+            self.event_map_change_reservation='on_ground'
+        elif not self.whether_reaches_ground and self.whether_reaches_ground_prev:
+            self.event_map_change_reservation='default'
+        self.set_dropped()
+    def update_lock_delay(self):    
+        if self.lock_delay_count < 5:
+            self.reset_gravity()
             self.lock_delay_count+=1
     def update_arrival_info(self):
-        self.arrival_maintained = self.whether_reaches_ground
+        self.whether_reaches_ground_prev = self.whether_reaches_ground
         self.whether_reaches_ground = self.reaches_ground()
-        self.arrival_maintained &= self.whether_reaches_ground
         
-    #drop
     def set_dropped(self):
         self.dropped = self.curr_block.get_shadow()
         while not self.overlaps(self.dropped):
             self.dropped.move_by_dir(self.DOWN)
         self.dropped.move_by_dir(self.UP)
-    ###
+
     def drop_block(self):
         self.curr_block.pos=self.dropped.pos
         self.install_block()
+        self.grab_block()
+        if self.game_over_flag:
+            return
+        self.update_lock()
+        self.reset_gravity()
     
     #block interaction
-    ###
     def is_full_line(self, i):
         for j in range(10):
             if self.board[i][j]==0:
@@ -450,10 +538,10 @@ class Tetris:
                 full_lines.append(i)
         if full_lines == []:
             return
-        #sort by descending order
         for i in full_lines:
             for j in range(10):
                 self.board[i][j]=0
+        #sort by descending order
         full_lines=sorted(full_lines)
         full_lines.reverse()
         self.pull_down_lines(full_lines)
@@ -478,20 +566,18 @@ class Tetris:
             self.board[i][j] = self.curr_block.num
             added_lines.add(i)
         self.clear_full_lines(added_lines)
-        self.grab_block()
         #play
         
     def grab_block(self):
         self.curr_block = Block(self.resource.block_names[self.block_queue[0]])
         del self.block_queue[0]
-        if len(self.block_queue)<4:
+        if len(self.block_queue)<5:
             self.add_blocks_to_queue()
         self.used_hold = False
         self.lock_delay_count = 0
         if self.overlaps(self.curr_block):
             self.game_over()
-            return
-        self.set_dropped()        
+            return     
 
     def is_valid_pos(self, y,x):
         y_valid = 0<=y and y<22
@@ -528,7 +614,7 @@ class Tetris:
         self.block_queue += list(numpy.random.permutation(list(range(1,8))))
 
     #rotation
-    def rotate_block(self, deg):
+    def rotate_curr_block(self, deg):
         #play
         rotated_block = self.curr_block.get_rotated(deg)
         kick_table = self.get_kick_table(deg)
@@ -540,11 +626,11 @@ class Tetris:
                 self.update_lock()
                 return
     def rotate_block_clockwise(self):
-        self.rotate_block(270)
+        self.rotate_curr_block(270)
     def rotate_block_counterclockwise(self):
-        self.rotate_block(90)
+        self.rotate_curr_block(90)
     def rotate_block_180(self):
-        self.rotate_block(180)
+        self.rotate_curr_block(180)
 
     def min(a, b):
         if a<=b:
@@ -560,14 +646,16 @@ class Tetris:
         self.event_map = {'down, escape':'exit_game'}
     
     #event
-    def add_event(self, cmd, delay):
+    def reserve_add_event(self, cmd, delay):
         self.event_queue_counter+=1
-        self.event_queue[self.event_queue_counter] = [cmd, time.time()+delay]
+        event = [self.event_queue_counter, [cmd, time.time()+delay]]
+        self.event_addition_reservation_list.append(event)
+        self.event_delete_reservation_onehot[self.event_queue_counter] = 0
     def execute_cmd(self,cmd):
         if type(cmd)==list and len(cmd)==2:
             delay = cmd[1]
             event = cmd[0]
-            self.add_event(event, delay)
+            self.reserve_add_event(event, delay)
         else:
             self.func_map[cmd]()
 
@@ -609,8 +697,15 @@ class Tetris:
     ##########
 
     def deal_input(self):
-        delete_reservation = []
-        add_reservation = []
+        addition_reservation_list = []
+        delete_reservation_list = []
+        if self.event_map_change_reservation is not None:
+            if self.event_map_change_reservation=='default':
+                self.event_map = self.event_map_default
+            elif self.event_map_change_reservation=='on_ground':
+                self.event_map = self.event_map_on_ground
+            self.event_map_change_reservation=None
+    
         for cmd_str in self.event_map.keys():
             cmd = cmd_str.split(', ')
             if self.is_input_occured(cmd):
@@ -619,14 +714,18 @@ class Tetris:
                     cmd[0]='hold'
                     cmd.append('0')
                     new_cmd_str = ', '.join(cmd)
-                    add_reservation.append([new_cmd_str, self.event_map[cmd_str]])
+                    addition_reservation_list.append([new_cmd_str, self.event_map[cmd_str]])
                 elif cmd[0]=='hold':
                     cnt=int(cmd[-1])
                     cmd[-1]=str(cnt+1)
                     new_cmd_str = ', '.join(cmd)
-                    add_reservation.append([new_cmd_str, self.event_map[cmd_str]])
-        for key, value in add_reservation:
+                    addition_reservation_list.append([new_cmd_str,self.event_map[cmd_str]])
+                    # delete_reservation_list.append(cmd_str)
+        
+        for key,value in addition_reservation_list:
             self.event_map[key]=value
+        for key in delete_reservation_list:
+            del self.event_map[key]
         for i in self.key_input_recorder.keys():
             self.key_input_recorder[i]['up']=False
             self.key_input_recorder[i]['down']=False
